@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -46,7 +47,7 @@ class GitHubClient:
             [
                 self.settings.github_app_id,
                 self.settings.github_installation_id,
-                self.settings.github_private_key_pem,
+                self._private_key_pem,
             ]
         )
 
@@ -140,7 +141,7 @@ class GitHubClient:
         credentials = GitHubAppCredentials(
             app_id=self.settings.github_app_id or "",
             installation_id=self.settings.github_installation_id or "",
-            private_key_pem=self.settings.github_private_key_pem or "",
+            private_key_pem=self._private_key_pem,
         )
         app_jwt = build_app_jwt(credentials)
         response = await self._http.post(
@@ -157,6 +158,12 @@ class GitHubClient:
             datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00")) - timedelta(minutes=1)
         )
         return self._installation_token
+
+    @property
+    def _private_key_pem(self) -> str:
+        if self.settings.github_private_key_path:
+            return Path(self.settings.github_private_key_path).read_text(encoding="utf-8")
+        return ""
 
 
 def has_relevant_label(labels: list[str]) -> bool:

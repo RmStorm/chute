@@ -118,7 +118,7 @@ Key settings:
 - `CHUTE_GITHUB_WEBHOOK_SECRET`
 - `CHUTE_GITHUB_APP_ID`
 - `CHUTE_GITHUB_INSTALLATION_ID`
-- `CHUTE_GITHUB_PRIVATE_KEY_PEM`
+- `CHUTE_GITHUB_PRIVATE_KEY_PATH`
 - `CHUTE_RECONCILE_INTERVAL_SECONDS`
 
 Example local `.env`:
@@ -136,11 +136,9 @@ CHUTE_GITHUB_OWNER=your-org
 CHUTE_GITHUB_REPO=your-monorepo
 CHUTE_GITHUB_WEBHOOK_SECRET=replace-me
 
-# Not used by the live code yet, but these are the intended settings for the
-# GitHub App integration.
 CHUTE_GITHUB_APP_ID=123456
 CHUTE_GITHUB_INSTALLATION_ID=78901234
-CHUTE_GITHUB_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+CHUTE_GITHUB_PRIVATE_KEY_PATH=.secrets/github-app-private-key.pem
 ```
 
 ## GitHub Setup
@@ -179,7 +177,7 @@ Record:
 - App ID
 - Installation ID
 - webhook secret
-- private key PEM
+- private key file path
 
 These map directly to the `CHUTE_GITHUB_*` environment variables above.
 

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     github_webhook_secret: str | None = None
     github_app_id: str | None = None
     github_installation_id: str | None = None
-    github_private_key_pem: str | None = None
+    github_private_key_path: Path | None = None
     github_owner: str = Field(default="example")
     github_repo: str = Field(default="monorepo")
     github_api_url: str = "https://api.github.com"

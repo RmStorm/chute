@@ -204,14 +204,16 @@ Label matching is case-insensitive: `automerge` and `Automerge` are equivalent.
 2. Run `uv sync --extra dev`
 3. Start the service with `uv run chute-dev`
 4. Open `http://localhost:8000/`
-5. Confirm the Swagger UI loads
+5. Confirm the live train board loads; Swagger is at `/docs`
 6. Send a health check to `GET /healthz`
 
 ## Endpoints
 
 The current HTTP surface is:
 
-- `GET /` Swagger UI
+- `GET /` live train board (Alpine.js and Tailwind via CDN)
+- `GET /stream` server-sent state updates; reconnects automatically
+- `GET /docs` Swagger UI
 - `GET /openapi.json` OpenAPI spec
 - `GET /healthz`
 - `GET /readyz`

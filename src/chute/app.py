@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from chute.api.health import router as health_router
 from chute.api.state import router as state_router
+from chute.api.ui import router as ui_router
 from chute.api.webhooks import router as webhook_router
 from chute.config import Settings
 from chute.db.repo import ActionRepository, EventRepository, PullRequestRepository, QueueRepository
@@ -68,12 +69,13 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(settings: Settings) -> FastAPI:
-    app = FastAPI(title=settings.app_name, docs_url="/", redoc_url=None, lifespan=lifespan)
+    app = FastAPI(title=settings.app_name, docs_url="/docs", redoc_url=None, lifespan=lifespan)
     container = build_container(settings)
     app.state.container = container
 
     app.include_router(health_router)
     app.include_router(state_router)
     app.include_router(webhook_router)
+    app.include_router(ui_router)
 
     return app

@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f2eb">
+  <title>Chute / Merge Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+  <style>
+    :root { --paper:#f4f2eb; --ink:#242b27; --line:#d9dcd1; --muted:#6a7368; --green:#2e6347; --orange:#d95a2b; }
+    [x-cloak] { display:none!important }
+    body { background:var(--paper); color:var(--ink); font-family:'DM Sans',sans-serif; background-image:radial-gradient(#59624e18 .7px,transparent .7px); background-size:8px 8px; }
+    .mono { font-family:'IBM Plex Mono',monospace }
+    .eyebrow { font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted) }
+    .rule { border-color:var(--line) }
+    .panel { background:#faf9f4; border:1px solid var(--line) }
+    .dot { width:7px; height:7px; border-radius:50%; display:inline-block; flex-shrink:0 }
+    .good { color:var(--green) } .bad { color:#a63b2d } .muted { color:var(--muted) }
+    .rail:before { content:''; position:absolute; left:20px; top:28px; bottom:0; width:1px; background:var(--line) }
+    .arrival { animation:arrive .35s ease-out both }
+    @keyframes arrive { from { opacity:0; transform:translateY(5px) } to { opacity:1; transform:translateY(0) } }
+    a { text-underline-offset:4px } a:focus-visible { outline:2px solid var(--orange); outline-offset:4px }
+    @media(prefers-reduced-motion:reduce) { *,*:before { animation:none!important; transition:none!important } }
+  </style>
+  <script>
+    document.addEventListener('alpine:init', () => {
+      Alpine.data('board', () => ({
+        data: {repo:'', base:'main', queue:[], waiting:[], recent:[], actions:[], checks:[], landed:0, ready:false, error:null},
+        connection:'connecting', source:null, clock:Date.now(), lastSignal:0, timer:null,
+        init() {
+          this.source = new EventSource('/stream');
+          this.source.onmessage = event => {
+            try { this.data = JSON.parse(event.data); this.connection='live'; this.lastSignal=Date.now(); }
+            catch { this.connection='reconnecting'; }
+          };
+          this.source.addEventListener('heartbeat', () => { this.connection='live'; this.lastSignal=Date.now(); });
+          this.source.addEventListener('unavailable', () => { this.connection='reconnecting'; });
+          this.source.onerror = () => { this.connection='reconnecting'; };
+          this.timer = setInterval(() => {
+            this.clock=Date.now();
+            if(this.lastSignal && this.clock-this.lastSignal>35000) this.connection='reconnecting';
+          }, 1000);
+        },
+        destroy() { this.source?.close(); clearInterval(this.timer); },
+        prUrl(number) { return 'https://github.com/'+this.data.repo+'/pull/'+Number(number); },
+        repoUrl() { return 'https://github.com/'+this.data.repo; },
+        age(value) {
+          if(!value) return 'awaiting sync';
+          const seconds=Math.max(0, Math.floor((this.clock-new Date(value).getTime())/1000));
+          if(seconds<5) return 'just now';
+          if(seconds<60) return seconds+'s ago';
+          if(seconds<3600) return Math.floor(seconds/60)+'m ago';
+          if(seconds<86400) return Math.floor(seconds/3600)+'h ago';
+          return Math.floor(seconds/86400)+'d ago';
+        },
+        ciName(pr) { return pr.phase==='merging' ? 'LANDING' : pr.ci==='passing' ? 'CI PASSED' : pr.ci==='failing' ? 'CI FAILED' : 'RUNNING CI'; },
+        status() { return this.data.error ? 'Controller blocked' : !this.data.ready ? 'Starting up' : this.data.queue.length ? 'Train in motion' : 'Clear track'; }
+      }));
+    });
+  </script>
+</head>
+<body class="min-h-screen" x-data="board">
+  <noscript><p style="padding:2rem">Chute's live board needs JavaScript. <a href="/docs">Open the API docs</a>.</p></noscript>
+  <div class="max-w-6xl mx-auto px-5 sm:px-10">
+    <header class="flex flex-wrap items-center justify-between gap-4 py-7 border-b rule">
+      <a href="/" class="flex items-center gap-3" aria-label="Chute home">
+        <span class="grid place-items-center w-9 h-9 bg-[#242b27] text-[#f4f2eb]" aria-hidden="true">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none"><path d="M5 4h14l-5 8v7l-4 2v-9L5 4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="text-2xl font-semibold tracking-tighter">chute<span class="text-[#d95a2b]">.</span></span>
+        <span class="eyebrow border-l rule pl-3 hidden sm:block">Merge control</span>
+      </a>
+      <div class="flex items-center gap-5 text-xs mono">
+        <a href="/docs" class="muted hover:underline">API docs ↗</a>
+        <span class="flex items-center gap-2" role="status">
+          <span class="dot" :style="'background:'+(connection==='live'?'#2e6347':'#d95a2b')"></span>
+          <span x-text="connection" class="uppercase tracking-wider text-[10px]">connecting</span>
+        </span>
+      </div>
+    </header>
+
+    <section class="pt-10 pb-8 sm:pt-14 sm:pb-10 flex flex-wrap items-end justify-between gap-6">
+      <div>
+        <p class="eyebrow mb-3">One track. Every change accounted for.</p>
+        <h1 class="text-4xl sm:text-5xl tracking-[-.055em] font-medium" x-text="status()">Connecting to Chute</h1>
+        <a x-show="data.repo" x-cloak :href="repoUrl()" target="_blank" rel="noopener" class="mt-4 inline-block mono text-xs muted hover:underline" x-text="data.repo"></a>
+      </div>
+      <div class="flex gap-8 sm:gap-12 pb-1">
+        <template x-for="stat in [{value:data.queue.length,label:'In train'},{value:data.waiting.length,label:'Waiting'},{value:data.landed,label:'Landed'}]" :key="stat.label">
+          <div><div class="mono text-3xl tracking-tighter" x-text="String(stat.value).padStart(2,'0')"></div><div class="eyebrow mt-1" x-text="stat.label"></div></div>
+        </template>
+      </div>
+    </section>
+
+    <div x-show="data.error" x-cloak role="alert" class="mb-6 border border-[#c96348] bg-[#fae9df] px-5 py-4">
+      <p class="eyebrow bad mb-2">Controller stopped / configuration needs attention</p>
+      <p class="text-sm bad break-words" x-text="data.error"></p>
+    </div>
+    <div x-show="connection==='reconnecting'" x-cloak role="status" class="mb-6 panel px-5 py-3 text-sm muted">Connection interrupted. Reconnecting automatically; showing the last received state.</div>
+
+    <main class="grid lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,1fr)] gap-6 pb-10">
+      <div class="min-w-0 space-y-6">
+        <section class="panel">
+          <div class="flex items-center justify-between px-5 py-4 border-b rule">
+            <h2 class="eyebrow">01 / The train</h2><span class="mono text-[10px] muted">rebase &amp; merge</span>
+          </div>
+          <div class="px-5 py-4 flex gap-2 items-center border-b rule text-xs mono">
+            <span class="dot bg-[#2e6347]"></span><span x-text="data.base">main</span><span class="muted ml-auto text-[10px]">destination</span>
+          </div>
+          <div x-show="!data.queue.length" class="px-6 py-12 text-center">
+            <div class="mono text-3xl muted mb-3" aria-hidden="true">───</div>
+            <p class="text-base font-medium">Nothing on the track.</p>
+            <p class="text-xs muted mt-2 leading-relaxed">Add <code class="mono bg-[#eaece2] px-1 py-0.5">automerge</code> to a PR. Green CI gets it aboard.</p>
+          </div>
+          <ol class="px-5">
+            <template x-for="(pr,index) in data.queue" :key="pr.number">
+              <li class="py-5 border-b rule last:border-0 arrival">
+                <div class="flex gap-3">
+                  <span class="mono text-xs flex-shrink-0 w-7 h-7 grid place-items-center" :class="index===0?'bg-[#d95a2b] text-white':'bg-[#e8ebe1] muted'" x-text="String(index+1).padStart(2,'0')"></span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex justify-between gap-2 flex-wrap items-center mb-2">
+                      <span class="eyebrow" :class="index===0?'text-[#d95a2b]':''" x-text="index===0?'Active head':'Following'"></span>
+                      <span class="mono text-[9px] tracking-wider" :class="pr.ci==='passing'?'good':pr.ci==='failing'?'bad':'muted'" x-text="ciName(pr)"></span>
+                    </div>
+                    <a :href="prUrl(pr.number)" target="_blank" rel="noopener" class="font-medium text-base hover:underline break-words"><span class="mono muted text-xs mr-1" x-text="'#'+pr.number"></span><span x-text="pr.title"></span></a>
+                    <div class="mono text-[10px] muted mt-2 break-all"><span x-text="pr.branch"></span><span class="mx-2">→</span><span x-text="pr.target_ref || data.base"></span><span class="ml-3" x-text="pr.head_sha?.slice(0,7)"></span></div>
+                    <p class="text-xs muted mt-3 leading-relaxed break-words" x-text="pr.reason"></p>
+                  </div>
+                </div>
+              </li>
+            </template>
+          </ol>
+        </section>
+
+        <section class="panel">
+          <div class="flex justify-between px-5 py-4 border-b rule"><h2 class="eyebrow">02 / Departure lounge</h2><span class="mono text-[10px] muted">initial CI</span></div>
+          <p x-show="!data.waiting.length" class="px-5 py-6 muted text-xs">No PRs waiting for their first green light.</p>
+          <template x-for="pr in data.waiting" :key="pr.number">
+            <div class="px-5 py-4 border-b rule last:border-0 arrival">
+              <a :href="prUrl(pr.number)" target="_blank" rel="noopener" class="text-sm font-medium hover:underline"><span class="mono muted mr-2" x-text="'#'+pr.number"></span><span x-text="pr.title"></span></a>
+              <p class="text-xs muted mt-2 break-words" x-text="pr.reason"></p>
+            </div>
+          </template>
+        </section>
+
+        <section x-show="data.recent.length" x-cloak>
+          <h2 class="eyebrow mb-3">Recently off the track</h2>
+          <template x-for="pr in data.recent" :key="pr.number">
+            <div class="flex items-center gap-3 py-3 border-t rule text-xs">
+              <span class="dot" :style="'background:'+(pr.phase==='merged'?'#2e6347':pr.phase==='failed'?'#a63b2d':'#8b9386')"></span>
+              <a :href="prUrl(pr.number)" target="_blank" rel="noopener" class="hover:underline truncate min-w-0"><span class="mono muted mr-2" x-text="'#'+pr.number"></span><span x-text="pr.title"></span></a>
+              <span class="mono text-[9px] uppercase ml-auto flex-shrink-0" :class="pr.phase==='merged'?'good':'muted'" x-text="pr.phase"></span>
+            </div>
+          </template>
+        </section>
+      </div>
+
+      <aside class="min-w-0">
+        <div class="flex justify-between items-center mb-4 pt-1"><h2 class="eyebrow">03 / Signal log</h2><span class="eyebrow">Live feed</span></div>
+        <p x-show="!data.actions.length" class="text-xs muted py-6">Waiting for the first signal.</p>
+        <ol>
+          <template x-for="action in data.actions" :key="action.id">
+            <li class="relative rail pl-10 pb-6 arrival">
+              <span class="dot absolute left-[17px] top-[5px]" :style="'background:'+(action.status==='error'?'#a63b2d':'#78836e')"></span>
+              <div class="flex gap-3 items-center mono text-[9px] muted mb-1.5"><span x-text="age(action.at)"></span><a x-show="action.number" :href="prUrl(action.number)" target="_blank" rel="noopener" class="hover:underline" x-text="'#'+action.number"></a></div>
+              <p class="text-xs leading-relaxed break-words" :class="action.status==='error'?'bad':''" x-text="action.message"></p>
+            </li>
+          </template>
+        </ol>
+      </aside>
+    </main>
+
+    <footer class="border-t rule py-5 flex flex-wrap gap-3 justify-between mono text-[9px] muted">
+      <span>CHUTE / ONE HEAD. NO SHORTCUTS.</span>
+      <span>Reconciled <span x-text="age(data.last_reconciled_at)">awaiting sync</span></span>
+      <span x-show="data.checks.length">Required: <span x-text="data.checks.join(', ')"></span></span>
+    </footer>
+  </div>
+</body>
+</html>

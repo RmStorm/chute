@@ -14,7 +14,7 @@ The intended model is:
 - a reconciler recomputes desired state from GitHub truth
 - SQLite stores local queue state and action history
 
-The long-term train design is a stacked PR queue:
+The train is a stacked PR queue:
 
 - first queued PR targets `main`
 - second queued PR targets the first PR branch
@@ -25,29 +25,15 @@ The core bet is that downstream PRs may stay green when GitHub retargets them af
 
 ## Current Status
 
-Implemented today:
+The controller implements GitHub App authentication, two-stage CI admission,
+real Git rebases, PR retargeting, rebase-and-merge landing, and descendant repair.
+SQLite journals expected pushes and merge intent for recovery after restarts.
+Webhooks wake a serialized controller; a 30-second sweep catches missed events.
 
-- `uv`-managed Python project
-- FastAPI app
-- Swagger UI at `/`
-- SQLite schema and repositories
-- GitHub webhook receiver with signature verification
-- startup bootstrap stub
-- reconciler loop
-- pure planner for admission and queue/head state
-- read-only state endpoints
-- planner unit tests
-
-Not implemented yet:
-
-- real GitHub App authentication
-- real GitHub read model
-- PR base retargeting
-- merge execution
-- notification delivery
-- branch/restack repair logic
-
-Treat the current codebase as a working controller skeleton, not a production-ready merge bot.
+This is a prototype intended for live validation on a disposable repository.
+The full stacked landing flow has not yet been validated end to end.
+`GET /train` reports queue entries, first-stage watchers, required checks, and
+configuration errors. `GET /readyz` returns 503 while configuration is blocked.
 
 ## Development
 
@@ -83,28 +69,38 @@ That is intentional. It keeps local development, Fly.io, and k8s all viable whil
 
 ## Labels
 
-Chute currently recognizes these labels:
+`automerge` arms a PR for the train (case-insensitive). Queue-now is deferred
+and does not bypass admission. Chute removes `automerge` on ejection and adds:
 
-- `Automerge`
-  Means the PR is armed, but should not enter the queue until it is eligible.
-- `Automerge-queue-now`
-  Means the PR should enter the queue immediately, even if checks are still pending.
+- `chute-failed` for failed required CI or rebase conflicts.
+- `chute-usererror` for a user push after labeling or an unsupported PR source.
 
-If both labels are present, `Automerge-queue-now` wins.
+After fixing an ejected PR, add `automerge` again to start a new admission attempt.
 
 ## Current Queue Semantics
 
-The current planner behavior is:
+1. PRs start against `main`. Adding `automerge` freezes their observed head SHA.
+2. Required CI must pass on that SHA before admission; pending checks wait.
+3. Eligible PRs append in admission order. Chute rebases each onto the train tail,
+   retargets it to its predecessor, and pushes with an explicit force-with-lease.
+4. The new SHA must pass required CI again. Only the head can land, after GitHub's
+   required reviews and merge conditions are satisfied.
+5. Landing uses GitHub's rebase-and-merge API with the expected head SHA.
+6. Promotion preserves the tested SHA when the old boundary and new base have
+   identical trees. Other base changes require another rebase and fresh CI.
+7. Ejection removes the PR from the train, restores its target to `main`, and
+   restacks descendants. If cleanup conflicts, its branch is retained for manual repair.
 
-- `Automerge` stays `armed` until checks, reviews, and mergeability are acceptable
-- `Automerge-queue-now` enters the queue immediately
-- existing queue order is preserved
-- new queue candidates are appended
-- the front PR becomes `ready` if eligible
-- the front PR becomes `waiting_checks` if still pending or blocked
-- a failed head is marked `failed` and ejected from the active queue
+Required checks come from classic branch protection and active rulesets on
+`CHUTE_TARGET_BRANCH` (default `main`). No required checks, unreadable policies,
+or disabled rebase merging block all branch mutations. The App must not be a
+bypass actor for repository protection. GitHub remains the final merge gate;
+concurrent changes to `main` can require another reconciliation.
 
-This is local planning behavior only. GitHub writes are not wired yet.
+Only same-repository branches are supported. Keep `.data/` across restarts:
+it contains both the database journal and Git objects used as stack boundaries.
+Run one controller process per database; a local lock prevents duplicate workers.
+Git credentials are passed in subprocess environment variables, never clone URLs.
 
 ## Configuration
 
@@ -130,7 +126,9 @@ CHUTE_PORT=8000
 CHUTE_LOG_LEVEL=INFO
 
 CHUTE_DATABASE_PATH=.data/chute.sqlite3
-CHUTE_RECONCILE_INTERVAL_SECONDS=10
+CHUTE_RECONCILE_INTERVAL_SECONDS=30
+CHUTE_GIT_WORKDIR=.data/train-git
+CHUTE_TARGET_BRANCH=main
 
 CHUTE_GITHUB_OWNER=your-org
 CHUTE_GITHUB_REPO=your-monorepo
@@ -155,6 +153,7 @@ Recommended baseline permissions:
 - `Pull requests`: Read and write
 - `Contents`: Read and write
 - `Metadata`: Read-only
+- `Administration`: Read-only (required to read branch protection)
 - `Checks`: Read-only
 - `Commit statuses`: Read-only
 
@@ -165,6 +164,7 @@ Event subscriptions:
 - `Check run`
 - `Check suite`
 - `Status`
+- `Push`
 
 You may later need additional permissions depending on how merge execution is implemented, but this is the right starting shape.
 
@@ -193,12 +193,10 @@ If you are running locally, use a tunnel such as `ngrok`, `cloudflared`, or an e
 
 ### 4. Create the Labels
 
-Create these labels in the repository:
+Create `automerge` in the repository. Chute creates `chute-failed` and
+`chute-usererror` when needed.
 
-- `Automerge`
-- `Automerge-queue-now`
-
-Use the exact spelling above for now. The code currently treats these label names as fixed constants.
+Label matching is case-insensitive: `automerge` and `Automerge` are equivalent.
 
 ## Local Bring-Up
 

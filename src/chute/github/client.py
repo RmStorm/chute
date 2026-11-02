@@ -7,9 +7,10 @@ from typing import Any, cast
 import httpx
 
 from chute.config import Settings
+from chute.core.enums import AdmissionMode
 from chute.core.models import PullRequestRecord
 from chute.github.auth import GitHubAppCredentials, build_app_jwt
-from chute.reconcile.planner import AUTOMERGE_LABEL, QUEUE_NOW_LABEL
+from chute.reconcile.planner import determine_admission_mode
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class GitHubClient:
             [
                 self.settings.github_app_id,
                 self.settings.github_installation_id,
-                self._private_key_pem,
+                self.settings.github_private_key_path,
             ]
         )
 
@@ -167,4 +168,4 @@ class GitHubClient:
 
 
 def has_relevant_label(labels: list[str]) -> bool:
-    return AUTOMERGE_LABEL in labels or QUEUE_NOW_LABEL in labels
+    return determine_admission_mode(labels) is not AdmissionMode.NONE

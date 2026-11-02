@@ -8,10 +8,8 @@ AUTOMERGE_LABEL = "Automerge"
 
 
 def determine_admission_mode(labels: list[str]) -> AdmissionMode:
-    label_set = set(labels)
-    if QUEUE_NOW_LABEL in label_set:
-        return AdmissionMode.QUEUE_NOW
-    if AUTOMERGE_LABEL in label_set:
+    label_set = {label.casefold() for label in labels}
+    if AUTOMERGE_LABEL.casefold() in label_set:
         return AdmissionMode.AUTOMERGE
     return AdmissionMode.NONE
 

@@ -124,7 +124,9 @@ class PullRequestRecord(SQLModel, table=True):
         check_runs: list[dict[str, Any]],
         combined_status: dict[str, Any],
     ) -> ChecksState:
-        conclusions = [run.get("conclusion") for run in check_runs if run.get("status") == "completed"]
+        conclusions = [
+            run.get("conclusion") for run in check_runs if run.get("status") == "completed"
+        ]
         statuses = [run.get("status") for run in check_runs]
 
         if any(conclusion not in {"success", "neutral", "skipped"} for conclusion in conclusions):
@@ -195,6 +197,13 @@ class ActionRecord(SQLModel, table=True):
     message: str
     details: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TrainJournal(SQLModel, table=True):
+    __tablename__ = "train_journal"
+
+    repo: str = Field(primary_key=True)
+    data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
 
 class NotificationRecord(SQLModel, table=True):

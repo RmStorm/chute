@@ -16,7 +16,7 @@ router = APIRouter(tags=["webhooks"])
 
 def verify_signature(secret: str | None, body: bytes, signature_header: str | None) -> None:
     if not secret:
-        return
+        raise HTTPException(status_code=503, detail="GitHub webhook secret is not configured")
     if not signature_header:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing signature")
     expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -38,11 +38,14 @@ async def github_webhook(
 
     payload = json.loads(body.decode("utf-8"))
     repo_full_name = payload.get("repository", {}).get("full_name")
+    if repo_full_name != container.github_client.repository.full_name:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"status": "ignored"}
     pr_number = payload.get("pull_request", {}).get("number")
     event_action = payload.get("action")
     received_at = datetime.now(UTC)
 
-    container.event_repo.insert(
+    inserted = container.event_repo.insert(
         EventRecord(
             delivery_id=x_github_delivery,
             event_type=x_github_event,
@@ -53,10 +56,19 @@ async def github_webhook(
             received_at=received_at,
         )
     )
+    if not inserted:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"status": "duplicate"}
 
     labels = [label["name"] for label in payload.get("pull_request", {}).get("labels", [])]
-    if repo_full_name and pr_number and (
-        x_github_event != "pull_request" or has_relevant_label(labels) or event_action in {"closed", "unlabeled"}
+    if (
+        repo_full_name
+        and pr_number
+        and (
+            x_github_event != "pull_request"
+            or has_relevant_label(labels)
+            or event_action in {"closed", "unlabeled"}
+        )
     ):
         pr_payload = payload.get("pull_request", {})
         container.pr_repo.upsert_webhook_pull_request(
@@ -75,4 +87,5 @@ async def github_webhook(
     )
 
     response.status_code = status.HTTP_202_ACCEPTED
+    container.reconciler.wake()
     return {"status": "accepted"}

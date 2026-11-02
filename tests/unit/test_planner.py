@@ -6,7 +6,26 @@ from chute.core.enums import (
     ReviewState,
 )
 from chute.core.models import PullRequestRecord
-from chute.reconcile.planner import plan_pull_requests
+import pytest
+
+from chute.github.client import has_relevant_label
+from chute.reconcile.planner import determine_admission_mode, plan_pull_requests
+
+
+@pytest.mark.parametrize(
+    ('labels', 'expected'),
+    [
+        (['automerge'], AdmissionMode.AUTOMERGE),
+        (['AUTOMERGE'], AdmissionMode.AUTOMERGE),
+        (['autoMERGE-queue-NOW'], AdmissionMode.QUEUE_NOW),
+        (['automerge', 'AUTOMERGE-QUEUE-NOW'], AdmissionMode.QUEUE_NOW),
+        (['unrelated'], AdmissionMode.NONE),
+        ([], AdmissionMode.NONE),
+    ],
+)
+def test_label_matching_ignores_case(labels: list[str], expected: AdmissionMode) -> None:
+    assert determine_admission_mode(labels) is expected
+    assert has_relevant_label(labels) is (expected is not AdmissionMode.NONE)
 
 
 def make_pr(

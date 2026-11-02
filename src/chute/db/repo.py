@@ -88,9 +88,13 @@ class PullRequestRepository:
 
     def list_dirty(self) -> list[PullRequestRecord]:
         with get_session(self.engine) as session:
-            statement = select(PullRequestRecord).where(col(PullRequestRecord.dirty)).order_by(
-                desc(col(PullRequestRecord.last_event_at)),
-                col(PullRequestRecord.number),
+            statement = (
+                select(PullRequestRecord)
+                .where(col(PullRequestRecord.dirty))
+                .order_by(
+                    desc(col(PullRequestRecord.last_event_at)),
+                    col(PullRequestRecord.number),
+                )
             )
             return list(session.exec(statement))
 
@@ -107,9 +111,13 @@ class QueueRepository:
 
     def list_active(self) -> list[QueueEntryRecord]:
         with get_session(self.engine) as session:
-            statement = select(QueueEntryRecord).where(col(QueueEntryRecord.active)).order_by(
-                col(QueueEntryRecord.position),
-                col(QueueEntryRecord.queued_at),
+            statement = (
+                select(QueueEntryRecord)
+                .where(col(QueueEntryRecord.active))
+                .order_by(
+                    col(QueueEntryRecord.position),
+                    col(QueueEntryRecord.queued_at),
+                )
             )
             return list(session.exec(statement))
 
@@ -155,10 +163,13 @@ class EventRepository:
     def __init__(self, engine) -> None:
         self.engine = engine
 
-    def insert(self, event: EventRecord) -> None:
+    def insert(self, event: EventRecord) -> bool:
         with get_session(self.engine) as session:
-            session.merge(event)
+            if session.get(EventRecord, event.delivery_id) is not None:
+                return False
+            session.add(event)
             session.commit()
+            return True
 
     def list_recent(self, limit: int = 50) -> list[EventRecord]:
         with get_session(self.engine) as session:

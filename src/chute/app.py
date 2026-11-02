@@ -12,7 +12,6 @@ from chute.db.repo import ActionRepository, EventRepository, PullRequestReposito
 from chute.db.sqlite import connect, create_db_and_tables
 from chute.github.client import GitHubClient
 from chute.reconcile.loop import Reconciler
-from chute.startup.bootstrap import bootstrap_pull_requests
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +59,6 @@ def build_container(settings: Settings) -> Container:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     container = app.state.container
-    settings = container.settings
-    if settings.bootstrap_on_startup:
-        count = await bootstrap_pull_requests(
-            pr_repo=container.pr_repo,
-            action_repo=container.action_repo,
-            github_client=container.github_client,
-        )
-        logger.info("startup_scrape_complete count=%s", count)
     await container.reconciler.start()
     try:
         yield

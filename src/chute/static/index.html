@@ -31,6 +31,7 @@
       Alpine.data('board', () => ({
         data: {repo:'', base:'main', queue:[], waiting:[], recent:[], actions:[], checks:[], landed:0, ready:false, error:null},
         connection:'connecting', source:null, clock:Date.now(), lastSignal:0, timer:null,
+        requesting:false, requestNotice:'',
         init() {
           this.source = new EventSource('/stream');
           this.source.onmessage = event => {
@@ -46,6 +47,17 @@
           }, 1000);
         },
         destroy() { this.source?.close(); clearInterval(this.timer); },
+        async reconcileNow() {
+          if(this.requesting) return;
+          this.requesting=true;
+          this.requestNotice='';
+          try {
+            const response=await fetch('/reconcile', {method:'POST', headers:{'X-Chute-Action':'reconcile'}});
+            if(!response.ok) throw new Error('Request failed ('+response.status+'). Try again.');
+            this.requestNotice='Reconciliation requested.';
+          } catch(error) { this.requestNotice=error.message || 'Unable to reach Chute.'; }
+          finally { this.requesting=false; }
+        },
         prUrl(number) { return 'https://github.com/'+this.data.repo+'/pull/'+Number(number); },
         repoUrl() { return 'https://github.com/'+this.data.repo; },
         age(value) {
@@ -75,6 +87,9 @@
         <span class="eyebrow border-l rule pl-3 hidden sm:block">Merge control</span>
       </a>
       <div class="flex items-center gap-5 text-xs mono">
+        <button type="button" @click="reconcileNow()" :disabled="requesting || data.reconciling || connection!=='live'"
+          class="border rule px-3 py-2 text-[10px] hover:bg-[#e8ebe1] disabled:opacity-50 disabled:cursor-wait transition-colors"
+          x-text="requesting?'Requesting...':data.reconciling?'Reconciling...':'Reconcile now'">Reconcile now</button>
         <a href="/docs" class="muted hover:underline">API docs ↗</a>
         <span class="flex items-center gap-2" role="status">
           <span class="dot" :style="'background:'+(connection==='live'?'#2e6347':'#d95a2b')"></span>
@@ -82,6 +97,7 @@
         </span>
       </div>
     </header>
+    <p x-show="requestNotice" x-cloak x-text="requestNotice" role="status" class="mono text-[10px] muted mt-3"></p>
 
     <section class="pt-10 pb-8 sm:pt-14 sm:pb-10 flex flex-wrap items-end justify-between gap-6">
       <div>
@@ -176,7 +192,9 @@
 
     <footer class="border-t rule py-5 flex flex-wrap gap-3 justify-between mono text-[9px] muted">
       <span>CHUTE / ONE HEAD. NO SHORTCUTS.</span>
-      <span>Reconciled <span x-text="age(data.last_reconciled_at)">awaiting sync</span></span>
+      <span>Full sweep <span x-text="age(data.last_reconciled_at)">awaiting sync</span></span>
+      <span>Event handled <span x-text="age(data.last_event_handled_at)">awaiting event</span></span>
+      <span x-show="data.sweep_interval_seconds">Safety sweep / <span x-text="Math.round(data.sweep_interval_seconds/60)"></span> min</span>
       <span x-show="data.checks.length">Required: <span x-text="data.checks.join(', ')"></span></span>
     </footer>
   </div>

@@ -2,7 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -15,6 +15,22 @@ PAGE = Path(__file__).resolve().parent.parent / "static" / "index.html"
 @router.get("/", include_in_schema=False)
 async def dashboard():
     return FileResponse(PAGE, headers={"Cache-Control": "no-cache"})
+
+
+@router.post("/reconcile", status_code=202)
+async def reconcile(
+    request: Request,
+    x_chute_action: str | None = Header(default=None),
+    container=Depends(get_container),
+):
+    # A custom header makes cross-origin forms and simple requests ineligible.
+    # No CORS origins are enabled. This uses the same access boundary as the UI.
+    if x_chute_action != "reconcile" or request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(
+            status_code=403, detail="Use the Chute dashboard to request reconciliation"
+        )
+    container.reconciler.wake("manual")
+    return {"status": "queued"}
 
 
 def snapshot(container) -> dict:
@@ -45,6 +61,9 @@ def snapshot(container) -> dict:
         "error": journal.get("error"),
         "ready": bool(journal.get("last_reconciled_at")),
         "last_reconciled_at": journal.get("last_reconciled_at"),
+        "last_event_handled_at": journal.get("last_event_handled_at"),
+        "reconciling": container.reconciler.running,
+        "sweep_interval_seconds": container.settings.reconcile_interval_seconds,
         "checks": [check[0] for check in (journal.get("policy") or {}).get("checks", [])],
         "queue": [
             present(entries[str(n)])

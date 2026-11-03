@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_path: Path = Path(".data/chute.sqlite3")
-    reconcile_interval_seconds: float = Field(default=30.0, gt=0)
+    reconcile_interval_seconds: float = Field(default=600.0, gt=0)
     git_workdir: Path = Path(".data/train-git")
     target_branch: str = "main"
 

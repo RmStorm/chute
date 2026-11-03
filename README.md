@@ -10,8 +10,8 @@ The intended model is:
 
 - GitHub is the control plane
 - labels drive behavior
-- webhooks mark pull requests dirty
-- a reconciler recomputes desired state from GitHub truth
+- webhooks schedule targeted work against fresh GitHub truth
+- a reconciler repairs the train and recovers missed events
 - SQLite stores local queue state and action history
 
 The train is a stacked PR queue:
@@ -28,10 +28,26 @@ The core bet is that downstream PRs may stay green when GitHub retargets them af
 The controller implements GitHub App authentication, two-stage CI admission,
 real Git rebases, PR retargeting, rebase-and-merge landing, and descendant repair.
 SQLite journals expected pushes and merge intent for recovery after restarts.
-Webhooks wake a serialized controller; a 30-second sweep catches missed events.
+Webhooks wake a serialized controller immediately. Reconciliation runs at startup,
+with a 10-minute safety sweep for missed events and a **Reconcile now** dashboard button.
+CI/status and review events refresh only the affected tracked PRs. A green head
+attempts to land immediately, without listing all PRs or fetching Git. Label,
+branch, base, and queue changes schedule train repair; repair traverses the active
+stack and affected watchers, without repository-wide PR discovery. Unrelated
+events do not query GitHub. Full discovery is reserved for startup, manual requests,
+the safety sweep, and retries of an interrupted full pass.
+
+Event routing and pending work are journaled together, with an in-flight batch
+retained across crashes. API failures retry with capped backoff. Completion and
+review events get up to five short, PR-scoped retries for GitHub's eventual
+consistency; the safety sweep remains a fallback. Logs distinguish `mode=targeted`
+from `mode=full` and include affected PR numbers and whether train repair ran.
 
 This is a prototype intended for live validation on a disposable repository.
-The full stacked landing flow has not yet been validated end to end.
+Targeted single-head landing has been exercised on `merge-bot-experiments`:
+PR #30 landed after required CI without another full sweep or a force-push.
+Concurrent multi-PR events and recovery paths still need live validation with
+the targeted dispatcher.
 `GET /train` reports queue entries, first-stage watchers, required checks, and
 configuration errors. `GET /readyz` returns 503 while configuration is blocked.
 
@@ -128,7 +144,7 @@ CHUTE_PORT=8000
 CHUTE_LOG_LEVEL=INFO
 
 CHUTE_DATABASE_PATH=.data/chute.sqlite3
-CHUTE_RECONCILE_INTERVAL_SECONDS=30
+CHUTE_RECONCILE_INTERVAL_SECONDS=600
 CHUTE_GIT_WORKDIR=.data/train-git
 CHUTE_TARGET_BRANCH=main
 
@@ -215,6 +231,7 @@ The current HTTP surface is:
 
 - `GET /` live train board (Alpine.js and Tailwind via CDN)
 - `GET /stream` server-sent state updates; reconnects automatically
+- `POST /reconcile` request a full reconciliation (dashboard action)
 - `GET /docs` Swagger UI
 - `GET /openapi.json` OpenAPI spec
 - `GET /healthz`

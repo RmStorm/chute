@@ -22,6 +22,7 @@ async def train(container=Depends(get_container)) -> dict:
         "error": journal.get("error"),
         "policy": journal.get("policy"),
         "last_reconciled_at": journal.get("last_reconciled_at"),
+        "last_event_handled_at": journal.get("last_event_handled_at"),
     }
 
 

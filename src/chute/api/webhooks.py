@@ -87,5 +87,5 @@ async def github_webhook(
     )
 
     response.status_code = status.HTTP_202_ACCEPTED
-    container.reconciler.wake()
+    container.reconciler.wake("webhook")
     return {"status": "accepted"}

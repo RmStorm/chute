@@ -1,8 +1,9 @@
 import asyncio
 import fcntl
 import logging
+from time import monotonic
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -38,8 +39,14 @@ class Reconciler:
         self._wake = asyncio.Event()
         self._serial = asyncio.Lock()
         self._lock_file = None
+        self._wake_reasons = set()
+        self.running = False
 
-    def wake(self):
+    def wake(self, reason="internal"):
+        if reason == "internal":
+            self.state.setdefault("work", {})["repair"] = True
+            self.save()
+        self._wake_reasons.add(reason)
         self._wake.set()
 
     async def start(self):
@@ -76,10 +83,27 @@ class Reconciler:
         (logger.error if error else logger.info)("%s pr=%s", message, number)
 
     async def _run(self):
+        trigger = "startup"
+        next_sweep = monotonic()
+        failures = 0
         while True:
+            reasons = self._wake_reasons.copy()
+            self._wake_reasons.clear()
             self._wake.clear()
+            started = monotonic()
+            full = (
+                trigger in {"startup", "safety_sweep"}
+                or "manual" in reasons
+                or bool(self.state.get("work", {}).get("full"))
+                or bool(self.state.get("inflight", {}).get("full"))
+            )
+            mode = "full" if full else "targeted"
+            logger.info(
+                "controller_started mode=%s triggers=%s", mode, ",".join(sorted(reasons)) or trigger
+            )
             try:
-                await self.run_once()
+                await self.run_once(full=full)
+                failures = 0
             except Exception as exc:
                 message = (
                     f"GitHub HTTP {exc.response.status_code}: {exc.request.url.path}"
@@ -91,10 +115,40 @@ class Reconciler:
                 self.state["error"] = message
                 self.save()
                 logger.exception("reconcile_failed")
+                failures += 1
+            finally:
+                logger.info(
+                    "controller_finished mode=%s duration_seconds=%.2f", mode, monotonic() - started
+                )
+            if full:
+                next_sweep = monotonic() + self.interval_seconds
+            delay = max(0, next_sweep - monotonic())
+            if failures:
+                # Keep durable work and retry network/API failures without waiting
+                # for the safety sweep. Do not spin on our own internal wakeups.
+                delay = min(delay, min(60, 2 ** min(failures, 6)))
+                self._wake.clear()
+            else:
+                for entry in self.state["entries"].values():
+                    if entry.get("retry_at"):
+                        delay = min(
+                            delay,
+                            max(
+                                0,
+                                (
+                                    datetime.fromisoformat(entry["retry_at"]) - datetime.now(UTC)
+                                ).total_seconds(),
+                            ),
+                        )
+                if self.state.get("work", {}).get("prs") or self.state.get("work", {}).get(
+                    "repair"
+                ):
+                    self.wake("pending_work")
             try:
-                await asyncio.wait_for(self._wake.wait(), timeout=self.interval_seconds)
+                await asyncio.wait_for(self._wake.wait(), timeout=delay)
+                trigger = "event"
             except TimeoutError:
-                pass
+                trigger = "safety_sweep" if monotonic() >= next_sweep else "retry"
 
     def watch(self, pr, observed=None):
         self.state["entries"][str(pr["number"])] = {
@@ -128,11 +182,68 @@ class Reconciler:
             payload = event.payload
             pr = payload.get("pull_request") or {}
             entry = self.state["entries"].get(str(pr.get("number")))
+            work = self.state.setdefault("work", {})
+            affected = set(work.get("prs", []))
+            check = (
+                payload.get("check_run")
+                or payload.get("check_suite")
+                or payload.get("workflow_run")
+                or {}
+            )
+            sha = check.get("head_sha") or payload.get("sha")
+            if event.event_type in {"check_run", "check_suite", "status", "workflow_run"}:
+                numbers = {p["number"] for p in check.get("pull_requests", [])}
+                for candidate in self.state["entries"].values():
+                    if candidate["phase"] not in ACTIVE:
+                        continue
+                    current_shas = {candidate["head_sha"], candidate.get("merge_sha_for_ci")}
+                    if (sha and sha in current_shas) or candidate["number"] in numbers:
+                        affected.add(candidate["number"])
+                        candidate.update(retry_count=0, retry_at=None)
+                        if event.action == "completed" or event.event_type == "status":
+                            candidate["settling"] = True
+            elif event.event_type == "push":
+                branch = payload.get("ref", "").removeprefix("refs/heads/")
+                if branch == self.settings.target_branch:
+                    work["repair"] = True
+                for candidate in self.state["entries"].values():
+                    if candidate["phase"] in ACTIVE and candidate["branch"] == branch:
+                        affected.add(candidate["number"])
+            elif pr.get("number"):
+                if entry and entry["phase"] in ACTIVE or labeled(pr):
+                    affected.add(pr["number"])
+                    if entry and event.event_type == "pull_request_review":
+                        entry.update(settling=True, retry_count=0, retry_at=None)
+                if (
+                    event.event_type == "pull_request"
+                    and event.action
+                    in {
+                        "labeled",
+                        "unlabeled",
+                        "closed",
+                        "reopened",
+                        "synchronize",
+                        "edited",
+                        "ready_for_review",
+                        "converted_to_draft",
+                    }
+                    and (entry and entry["phase"] in ACTIVE or labeled(pr))
+                ):
+                    work["repair"] = True
+                    if entry and event.action in {"edited", "ready_for_review", "labeled"}:
+                        entry.update(settling=True, retry_count=0, retry_at=None)
+            elif event.event_type in {"branch_protection_rule", "repository_ruleset"}:
+                work["repair"] = True
+                affected.update(
+                    e["number"] for e in self.state["entries"].values() if e["phase"] in ACTIVE
+                )
+            work["prs"] = sorted(affected)
             if event.event_type == "pull_request" and pr.get("head"):
                 label = payload.get("label", {}).get("name", "").casefold()
                 if event.action == "labeled" and label == "automerge":
                     if entry is None or entry["phase"] not in ACTIVE:
                         self.watch(pr, event.received_at.replace(tzinfo=UTC).isoformat())
+                        self.state["entries"][str(pr["number"])]["settling"] = True
                 elif entry and entry["phase"] in {"watching", "queued"}:
                     if event.action == "unlabeled" and label == "automerge":
                         self.eject(entry, "Automerge label removed", None)
@@ -146,12 +257,132 @@ class Reconciler:
                             )
             self.store.save(self.state, event.delivery_id)
 
-    async def run_once(self):
+    async def run_once(self, full=True):
         async with self._serial:
-            await self._reconcile()
+            self.running = True
+            try:
+                self.consume_events()
+                work = self.state.setdefault("work", {})
+                inflight = self.state.get("inflight", {})
+                targets = set(work.get("prs", [])) | set(inflight.get("prs", []))
+                full = bool(full or work.get("full") or inflight.get("full"))
+                for entry in self.state["entries"].values():
+                    if entry.get("retry_at") and entry["retry_at"] <= now():
+                        targets.add(entry["number"])
+                        entry["retry_at"] = None
+                repair = bool(work.get("repair") or inflight.get("repair"))
+                # Preserve the batch across crashes, separately from work queued
+                # by transitions or events consumed during the merge guard.
+                self.state["inflight"] = {"prs": sorted(targets), "repair": repair, "full": full}
+                self.state["work"] = {}
+                self.save()
+                try:
+                    logger.info(
+                        "controller_dispatch full=%s repair=%s prs=%s",
+                        full,
+                        repair,
+                        sorted(targets),
+                    )
+                    handled = False
+                    if full or repair:
+                        await self._reconcile(full=full, targets=targets)
+                        handled = True
+                    elif targets:
+                        handled = await self.handle_updates(targets)
+                    self.schedule_settlement(targets)
+                    pending = self.state.setdefault("work", {})
+                    if pending.get("repair"):
+                        pending["prs"] = sorted(set(pending.get("prs", [])) | targets)
+                    self.state.pop("inflight", None)
+                    if handled:
+                        self.state["error"] = None
+                    self.save()
+                except BaseException:
+                    pending = self.state.setdefault("work", {})
+                    pending["prs"] = sorted(set(pending.get("prs", [])) | targets)
+                    pending["repair"] = bool(pending.get("repair") or repair or full)
+                    pending["full"] = bool(pending.get("full") or full)
+                    self.state.pop("inflight", None)
+                    self.save()
+                    raise
+            finally:
+                self.running = False
 
-    async def check_entry(self, entry, policy):
-        pr = await self.api.pull(entry["number"])
+    async def handle_updates(self, targets):
+        active = [
+            self.state["entries"][str(n)]
+            for n in targets
+            if str(n) in self.state["entries"] and self.state["entries"][str(n)]["phase"] in ACTIVE
+        ]
+        if not active:
+            return False
+        policy = await self.api.policy(self.settings.target_branch)
+        self.state["policy"] = {"checks": policy["checks"], "reviews": policy["reviews"]}
+        snapshots = {}
+        for entry in active:
+            number = entry["number"]
+            if entry["phase"] in {"ejecting", "merging"} or entry.get("pending"):
+                self.wake()
+                continue
+            pr = await self.api.pull(number)
+            snapshots[number] = pr
+            if (
+                pr["state"] != "open"
+                or not labeled(pr)
+                or pr["base"]["ref"] != (entry.get("target_ref") or self.settings.target_branch)
+            ):
+                self.wake()
+                continue
+            entry["ci"], entry["reason"] = await self.check_entry(entry, policy, pr=pr)
+            if entry["phase"] == "ejecting":
+                self.wake()
+            elif entry["ci"] == "failing":
+                self.eject(entry, entry["reason"], "chute-failed")
+                self.wake()
+            elif entry["phase"] == "watching" and (
+                entry["ci"] == "passing" or not self.state["order"]
+            ):
+                self.state.setdefault("work", {}).setdefault("prs", []).append(number)
+                self.wake()
+            elif (
+                self.state["order"]
+                and number == self.state["order"][0]
+                and entry["ci"] == "passing"
+            ):
+                main_sha = await self.api.branch(self.settings.target_branch)
+                if entry["target_sha"] != main_sha:
+                    self.wake()
+                else:
+                    await self.merge_head(policy, main_sha)
+        self.publish(snapshots)
+        self.state["last_event_handled_at"] = now()
+        self.save()
+        return True
+
+    def schedule_settlement(self, targets):
+        for number in targets:
+            entry = self.state["entries"].get(str(number))
+            if not entry or not entry.get("settling"):
+                continue
+            head = bool(self.state["order"] and number == self.state["order"][0])
+            if entry["phase"] not in {"queued", "watching"} or (
+                entry["ci"] == "passing" and not head
+            ):
+                entry.update(settling=False, retry_at=None)
+                continue
+            # Completion delivery can precede consistent CI/mergeability reads.
+            count = entry.get("retry_count", 0)
+            if count < 5:
+                entry["retry_at"] = (
+                    datetime.now(UTC) + timedelta(seconds=min(30, 2 ** (count + 1)))
+                ).isoformat()
+                entry["retry_count"] = count + 1
+            else:
+                entry.update(settling=False, retry_at=None)
+
+    async def check_entry(self, entry, policy, pr=None):
+        if pr is None:
+            pr = await self.api.pull(entry["number"])
         if pr["head"]["sha"] != entry["head_sha"]:
             self.eject(entry, "User pushed after adding automerge", "chute-usererror")
             self.wake()
@@ -159,21 +390,28 @@ class Reconciler:
         if pr["state"] != "open" or not labeled(pr):
             self.wake()
             return "pending", "PR changed while checking CI"
+        entry["merge_sha_for_ci"] = pr.get("merge_commit_sha")
         return await self.api.checks(
             entry["head_sha"], policy, pr.get("merge_commit_sha"), pr["base"]["sha"]
         )
 
-    async def _reconcile(self):
+    async def _reconcile(self, full=True, targets=None):
         if not self.github_client.is_configured:
             raise ConfigurationError("GitHub App credentials are not configured")
-        self.consume_events()
-        pulls = await self.api.pages(
-            f"{self.api.root}/pulls", state="open", sort="created", direction="asc"
+        targets = targets or set()
+        pulls = (
+            await self.api.pages(
+                f"{self.api.root}/pulls", state="open", sort="created", direction="asc"
+            )
+            if full
+            else [await self.api.pull(n) for n in sorted(targets)]
         )
         for pr in pulls:
             entry = self.state["entries"].get(str(pr["number"]))
-            if labeled(pr) and (
-                entry is None or (entry["phase"] not in ACTIVE and entry.get("label_absent"))
+            if (
+                pr["state"] == "open"
+                and labeled(pr)
+                and (entry is None or (entry["phase"] not in ACTIVE and entry.get("label_absent")))
             ):
                 self.watch(pr)
             elif entry and not labeled(pr) and entry["phase"] not in ACTIVE:
@@ -190,6 +428,13 @@ class Reconciler:
         snapshots = {}
         for entry in list(self.state["entries"].values()):
             if entry["phase"] not in ACTIVE:
+                continue
+            if (
+                not full
+                and self.state["order"]
+                and entry["phase"] == "watching"
+                and entry["number"] not in targets
+            ):
                 continue
             pr = await self.api.pull(entry["number"])
             snapshots[entry["number"]] = pr
@@ -228,6 +473,11 @@ class Reconciler:
         self.state["order"] = [
             n for n in self.state["order"] if self.state["entries"][str(n)]["phase"] == "queued"
         ]
+        if not self.state["order"] and any(
+            e["phase"] == "watching" and e["number"] not in snapshots
+            for e in self.state["entries"].values()
+        ):
+            self.wake()
         self.save()
         target_ref, target_sha = self.settings.target_branch, main_sha
         for number in self.state["order"]:
@@ -238,7 +488,11 @@ class Reconciler:
                 return
             target_ref, target_sha = entry["branch"], entry["head_sha"]
         watchers = sorted(
-            (e for e in self.state["entries"].values() if e["phase"] == "watching"),
+            (
+                e
+                for e in self.state["entries"].values()
+                if e["phase"] == "watching" and e["number"] in snapshots
+            ),
             key=lambda e: (e["since"], e["number"]),
         )
         for entry in watchers:
@@ -292,7 +546,7 @@ class Reconciler:
         self.publish(snapshots)
         if self.state["order"]:
             await self.merge_head(policy, main_sha)
-        self.state["last_reconciled_at"] = now()
+        self.state["last_reconciled_at" if full else "last_event_handled_at"] = now()
         self.save()
 
     async def prepare(self, entry, pr, target_ref, target_sha, policy):
@@ -346,6 +600,12 @@ class Reconciler:
         if fresh["base"]["ref"] != target_ref:
             await self.api.retarget(entry["number"], target_ref)
             self.log(entry["number"], f"Retargeted to {target_ref}", action=ActionType.RETARGET_PR)
+        if entry.get("target_ref") != target_ref and target_ref == self.settings.target_branch:
+            entry.update(
+                settling=True,
+                retry_count=0,
+                retry_at=(datetime.now(UTC) + timedelta(seconds=2)).isoformat(),
+            )
         entry["target_ref"] = target_ref
         self.save()
         return True
@@ -379,6 +639,8 @@ class Reconciler:
             pending=None,
             ci="pending",
             reason="Waiting for CI after rebase",
+            settling=False,
+            retry_at=None,
         )
         if pending.get("cleanup"):
             entry["cleanup_done"] = True
@@ -443,12 +705,15 @@ class Reconciler:
         fresh = await self.api.pull(number)
         if (
             fresh["state"] != "open"
-            or fresh.get("draft")
             or not labeled(fresh)
             or fresh["head"]["sha"] != entry["head_sha"]
             or fresh["base"]["ref"] != self.settings.target_branch
         ):
             self.wake()
+            return
+        if fresh.get("draft"):
+            entry["reason"] = "Draft PR is not eligible"
+            self.save()
             return
         if await self.api.branch(self.settings.target_branch) != main_sha:
             self.wake()

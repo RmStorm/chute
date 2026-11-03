@@ -48,6 +48,8 @@ class TrainGit:
             "commit.gpgsign=false",
             "-c",
             "credential.helper=",
+            "-c",
+            "http.followRedirects=false",
             *args,
             cwd=self.path,
             env=env,
@@ -66,10 +68,21 @@ class TrainGit:
             raise GitError(f"git {args[0]} failed (exit {process.returncode})")
         return stdout.decode().strip()
 
-    async def fetch(self, url: str, token: str):
+    @staticmethod
+    def check_remote(url: str):
+        # The installation token is sent to this URL; only ever hand it to github.com.
         parsed = urlsplit(url)
-        if parsed.scheme != "https" or parsed.username or parsed.password:
-            raise GitError("Git clone URL must be HTTPS without embedded credentials")
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "github.com"
+            or parsed.port is not None
+            or parsed.username
+            or parsed.password
+        ):
+            raise GitError("Git remote must be https://github.com without embedded credentials")
+
+    async def fetch(self, url: str, token: str):
+        self.check_remote(url)
         self.path.mkdir(parents=True, exist_ok=True)
         if not (self.path / ".git").exists():
             await self.run("init", ".")
@@ -113,6 +126,7 @@ class TrainGit:
         return new_sha
 
     async def push(self, url: str, branch: str, old: str, new: str, token: str):
+        self.check_remote(url)
         await self.run("check-ref-format", f"refs/heads/{branch}")
         await self.run(
             "push",

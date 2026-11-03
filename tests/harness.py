@@ -19,7 +19,7 @@ from chute.git import TrainGit
 
 REPO = "test/train"
 ROOT = f"/repos/{REPO}"
-CLONE = "https://git.invalid/test/train.git"
+CLONE = "https://github.com/test/train.git"
 
 
 class Remote:

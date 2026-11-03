@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     github_private_key_path: Path | None = None
     github_owner: str = Field(default="example")
     github_repo: str = Field(default="monorepo")
-    github_api_url: str = "https://api.github.com"
+    github_api_url: str = Field(default="https://api.github.com", pattern=r"^https://")
 
 
 @lru_cache

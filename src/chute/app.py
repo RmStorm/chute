@@ -13,6 +13,8 @@ from starlette.concurrency import run_in_threadpool
 from chute.controller import ACTIVE, Controller
 from chute.store import Action, Event
 
+VENDORED = frozenset({"tailwind-3.4.17.js", "alpinejs-3.14.9.js"})
+
 
 def snapshot(controller):
     state = controller.store.load()
@@ -87,6 +89,17 @@ def create_app(settings, *, github_transport=None, git=None):
     async def dashboard():
         return FileResponse(
             Path(__file__).parent / "static/index.html", headers={"Cache-Control": "no-cache"}
+        )
+
+    @app.get("/static/{name}", include_in_schema=False)
+    async def vendored(name: str):
+        # Third-party scripts are vendored so the dashboard loads no code from CDNs.
+        if name not in VENDORED:
+            raise HTTPException(404)
+        return FileResponse(
+            Path(__file__).parent / "static" / name,
+            media_type="text/javascript",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
     @app.get("/healthz")

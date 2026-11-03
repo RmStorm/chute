@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f2eb">
   <title>Chute / Merge Control</title>
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon.ico">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -130,7 +131,7 @@
           <div x-show="!data.queue.length" class="px-6 py-12 text-center">
             <div class="mono text-3xl muted mb-3" aria-hidden="true">───</div>
             <p class="text-base font-medium">Nothing on the track.</p>
-            <p class="text-xs muted mt-2 leading-relaxed">Add <code class="mono bg-[#eaece2] px-1 py-0.5">automerge</code> to a PR. Green CI gets it aboard.</p>
+            <p class="text-xs muted mt-2 leading-relaxed">Add <code class="mono bg-[#eaece2] px-1 py-0.5">automerge</code> to a PR, or <code class="mono bg-[#eaece2] px-1 py-0.5">automerge-priority</code> to take the front. Required CI gates merging.</p>
           </div>
           <ol class="px-5">
             <template x-for="(pr,index) in data.queue" :key="pr.number">

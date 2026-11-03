@@ -88,13 +88,22 @@ That is intentional. It keeps local development, Fly.io, and k8s all viable whil
 
 ## Labels
 
-`automerge` arms a PR for the train (case-insensitive). Queue-now is deferred
-and does not bypass admission. Chute removes `automerge` on ejection and adds:
+`automerge` arms a PR for the train (case-insensitive). `automerge-priority`
+arms a PR on its own and moves it straight to the head without waiting for
+preliminary CI. It also promotes an already watching or queued PR. The existing
+train is restacked behind it; rewritten commits need fresh CI. Required CI on
+the resulting head SHA and GitHub review/merge requirements still gate landing.
+Draft PRs wait until ready. Each new priority request takes the front, including
+ahead of older priority requests; keeping the label does not repeatedly reorder
+the train. Removing priority while `automerge` remains keeps the PR queued in its
+current position. Removing the last admission label ejects it.
+
+Queue-now is deferred. Chute removes both admission labels on failure and adds:
 
 - `chute-failed` for failed required CI or rebase conflicts.
 - `chute-usererror` for a user push after labeling or an unsupported PR source.
 
-After fixing an ejected PR, add `automerge` again to start a new admission attempt.
+After fixing an ejected PR, add either admission label again to start a new attempt.
 
 ## Current Queue Semantics
 
@@ -104,6 +113,8 @@ After fixing an ejected PR, add `automerge` again to start a new admission attem
    are preserved; it lands once required CI and review/merge requirements pass.
 3. Followers wait for green initial CI before appending. Chute rebases each onto
    the train tail, retargets it, and pushes with an explicit force-with-lease.
+   `automerge-priority` skips this preliminary gate and inserts at the head,
+   rebasing onto current main when needed and repairing the stack behind it.
 4. Any rewritten SHA must pass required CI again. This also applies to a head
    that needs rebasing because `main` advanced. Only the head can land.
 5. Landing uses GitHub's rebase-and-merge API with the expected head SHA.
@@ -214,7 +225,7 @@ If you are running locally, use a tunnel such as `ngrok`, `cloudflared`, or an e
 
 ### 4. Create the Labels
 
-Create `automerge` in the repository. Chute creates `chute-failed` and
+Create `automerge` and `automerge-priority` in the repository. Chute creates `chute-failed` and
 `chute-usererror` when needed.
 
 Label matching is case-insensitive: `automerge` and `Automerge` are equivalent.

@@ -13,6 +13,7 @@ from chute.store import Store
 
 logger = logging.getLogger(__name__)
 ACTIVE = {"watching", "queued", "merging", "ejecting"}
+ADMISSION_LABELS = {"automerge", "automerge-priority"}
 
 
 def now():
@@ -20,7 +21,11 @@ def now():
 
 
 def labeled(pr):
-    return any(label["name"].casefold() == "automerge" for label in pr.get("labels", []))
+    return any(label["name"].casefold() in ADMISSION_LABELS for label in pr.get("labels", []))
+
+
+def priority(pr):
+    return any(label["name"].casefold() == "automerge-priority" for label in pr.get("labels", []))
 
 
 class Controller:
@@ -162,9 +167,16 @@ class Controller:
             "ci": "pending",
             "queued_at": None,
             "label_absent": False,
+            "priority": priority(pr),
+            "priority_requested_at": (observed or now()) if priority(pr) else None,
         }
         self.save()
-        self.log(pr["number"], "Watching labeled PR; initial CI must pass before admission")
+        self.log(
+            pr["number"],
+            "Priority requested; skipping preliminary CI admission"
+            if priority(pr)
+            else "Watching labeled PR; initial CI must pass before admission",
+        )
 
     def eject(self, entry, reason, label):
         entry.update(phase="ejecting", reason=reason, failure_label=label)
@@ -234,13 +246,20 @@ class Controller:
             work["prs"] = sorted(affected)
             if event.event_type == "pull_request" and pr.get("head"):
                 label = payload.get("label", {}).get("name", "").casefold()
-                if event.action == "labeled" and label == "automerge":
+                if event.action == "labeled" and label in ADMISSION_LABELS:
                     if entry is None or entry["phase"] not in ACTIVE:
                         self.watch(pr, event.received_at.isoformat())
                         self.state["entries"][str(pr["number"])]["settling"] = True
+                    elif label == "automerge-priority" and not entry.get("priority"):
+                        entry.update(
+                            priority=True, priority_requested_at=event.received_at.isoformat()
+                        )
                 elif entry and entry["phase"] in {"watching", "queued"}:
-                    if event.action == "unlabeled" and label == "automerge":
-                        self.eject(entry, "Automerge label removed", None)
+                    if event.action == "unlabeled" and label in ADMISSION_LABELS:
+                        if label == "automerge-priority":
+                            entry.update(priority=False, priority_requested_at=None)
+                        if not labeled(pr):
+                            self.eject(entry, "Automerge label removed", None)
                     elif event.action == "synchronize":
                         after = payload.get("after", pr["head"]["sha"])
                         if event.received_at.isoformat() >= entry["since"] and after not in [
@@ -373,6 +392,11 @@ class Controller:
         for entry in selected:
             pr = fetched.get(entry["number"]) or await self.api.pull(entry["number"])
             entry.update(title=pr["title"], author=pr["user"]["login"])
+            if priority(pr) and not entry.get("priority"):
+                entry["priority_requested_at"] = now()
+            entry["priority"] = priority(pr)
+            if not entry["priority"]:
+                entry["priority_requested_at"] = None
             snapshots[entry["number"]] = pr
             if pr.get("merged") or pr["state"] != "open":
                 entry.update(
@@ -412,6 +436,9 @@ class Controller:
             if entry["phase"] == "merging":
                 entry["phase"] = "queued"  # A timed-out merge must be refreshed before retrying.
             if not repair:
+                if entry.get("priority_requested_at"):
+                    self.wake()
+                    continue
                 if pr["base"]["ref"] != (entry.get("target_ref") or self.settings.target_branch):
                     self.wake()
                     continue
@@ -444,6 +471,7 @@ class Controller:
         ):
             self.wake()
         self.save()
+        await self.promote_priorities(snapshots, main_sha)
         target_ref, target_sha = self.settings.target_branch, main_sha
         for number in self.state["order"]:
             entry = self.state["entries"][str(number)]
@@ -500,6 +528,46 @@ class Controller:
             await self.merge_head(policy, main_sha)
         self.state["last_reconciled_at" if full else "last_event_handled_at"] = now()
         self.save()
+
+    async def promote_priorities(self, snapshots, main_sha):
+        # Each label request moves once. Keeping the label must not cause older
+        # priority PRs to repeatedly overtake newer ones on every repair/restart.
+        candidates = sorted(
+            (
+                e
+                for e in self.state["entries"].values()
+                if e["phase"] in {"watching", "queued"}
+                and e.get("priority_requested_at")
+                and e["number"] in snapshots
+            ),
+            key=lambda e: (e["priority_requested_at"], e["number"]),
+        )
+        for entry in candidates:
+            pr = snapshots[entry["number"]]
+            if pr.get("draft"):
+                entry["reason"] = "Draft PR is not eligible"
+                continue
+            if entry["phase"] == "watching":
+                if pr["base"]["ref"] != self.settings.target_branch:
+                    self.eject(entry, "PR must start against main", "chute-usererror")
+                    self.wake()
+                    continue
+                entry["boundary"] = await self.git.boundary(entry["head_sha"], main_sha)
+            order = self.state["order"]
+            if entry["number"] in order:
+                order.remove(entry["number"])
+            order.insert(0, entry["number"])
+            entry.update(
+                phase="queued",
+                queued_at=entry.get("queued_at") or now(),
+                priority_requested_at=None,
+            )
+            self.save()
+            self.log(
+                entry["number"],
+                "Priority PR moved to train head without preliminary CI",
+                action="enqueue_pr",
+            )
 
     async def prepare(self, entry, pr, target_ref, target_sha, policy):
         if entry["head_sha"] != pr["head"]["sha"]:
@@ -678,7 +746,8 @@ class Controller:
             self.save()
             return
         self.consume_events()
-        if entry["phase"] != "queued":
+        if entry["phase"] != "queued" or self.state.get("work", {}).get("repair"):
+            self.wake()
             return
         entry["phase"] = "merging"
         self.save()

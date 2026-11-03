@@ -273,7 +273,7 @@ class GitHub:
         await self.request("POST", f"{self.root}/issues/{number}/labels", json={"labels": [label]})
         labels = await self.pages(f"{self.root}/issues/{number}/labels")
         for existing in labels:
-            if existing["name"].casefold() == "automerge":
+            if existing["name"].casefold() in {"automerge", "automerge-priority"}:
                 try:
                     await self.request(
                         "DELETE",

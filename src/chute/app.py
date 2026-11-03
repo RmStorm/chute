@@ -91,6 +91,14 @@ def create_app(settings, *, github_transport=None, git=None):
             Path(__file__).parent / "static/index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return FileResponse(
+            Path(__file__).parent / "static/favicon.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     @app.get("/static/{name}", include_in_schema=False)
     async def vendored(name: str):
         # Third-party scripts are vendored so the dashboard loads no code from CDNs.

@@ -379,17 +379,21 @@ class Harness:
             await self.idle(allow_error=allow_error)
         return response.json()
 
-    async def pr_event(self, number, action="labeled", **kwargs):
+    async def pr_event(self, number, action="labeled", *, label="automerge", **kwargs):
         if action == "labeled":
-            self.api.prs[number]["labels"] = [{"name": "automerge"}]
+            labels = self.api.prs[number]["labels"]
+            if not any(existing["name"] == label for existing in labels):
+                labels.append({"name": label})
         elif action == "unlabeled":
-            self.api.prs[number]["labels"] = []
+            self.api.prs[number]["labels"] = [
+                existing for existing in self.api.prs[number]["labels"] if existing["name"] != label
+            ]
         pr = self.api.pull(number)
         return await self.event(
             "pull_request",
             {
                 "action": action,
-                "label": {"name": "automerge"},
+                "label": {"name": label},
                 "pull_request": pr,
                 "after": pr["head"]["sha"],
             },

@@ -54,6 +54,22 @@ async def test_read_endpoints_and_manual_reconcile_guard(rig):
     ).status_code == 403
 
 
+async def test_dashboard_assets_are_served_without_exposing_other_files(rig):
+    page = await rig.client.get("/")
+    assert 'href="/favicon.ico"' in page.text
+    icon = await rig.client.get("/favicon.ico")
+    assert icon.status_code == 200
+    assert icon.headers["content-type"] == "image/png"
+    assert icon.content.startswith(b"\x89PNG\r\n\x1a\n")
+    for name in ("tailwind-3.4.17.js", "alpinejs-3.14.9.js"):
+        response = await rig.client.get(f"/static/{name}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/javascript")
+        assert response.content
+    for name in ("index.html", ".env", "unknown.js"):
+        assert (await rig.client.get(f"/static/{name}")).status_code == 404
+
+
 async def test_sse_stream_publishes_initial_and_changed_journal(rig):
     # Drive ASGI directly: HTTPX's in-process transport buffers infinite streams.
     incoming, snapshots = asyncio.Queue(), asyncio.Queue()

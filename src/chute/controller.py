@@ -24,11 +24,11 @@ def labeled(pr):
 
 
 class Controller:
-    def __init__(self, settings):
+    def __init__(self, settings, *, github_transport=None, git=None):
         self.settings = settings
         self.interval_seconds = settings.reconcile_interval_seconds
-        self.api = GitHub(settings)
-        self.git = TrainGit(settings.git_workdir)
+        self.api = GitHub(settings, transport=github_transport)
+        self.git = git if git is not None else TrainGit(settings.git_workdir)
         self.store = Store(settings.database_path, self.api.repo)
         self.state = self.store.load()
         self._task = None

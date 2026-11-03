@@ -48,8 +48,9 @@ Targeted single-head landing has been exercised on `merge-bot-experiments`:
 PR #30 landed after required CI without another full sweep or a force-push.
 The journal-only backend also landed PRs #31-#33 as a stack, including follower
 two-stage CI, SHA-preserving promotion, and a restart during an in-flight CI
-batch. Conflict/ejection paths and every remote-write crash window have not
-been re-exercised after this refactor.
+batch. Automated scenarios also exercise conflict/ejection paths, lease races,
+and selected remote-write recovery windows; not every crash window has been
+validated against live GitHub.
 `GET /train` reports queue entries, first-stage watchers, required checks, and
 configuration errors. `GET /readyz` returns 503 while configuration is blocked.
 
@@ -277,9 +278,44 @@ GitHub is still intended to be the source of truth for live PR state. SQLite is 
 - `app.py`: HTTP endpoints and native FastAPI SSE.
 - `config.py`, `main.py`, `logging.py`: configuration and process startup.
 
-The retired planner/client/projection tests were removed with their implementation.
-Use `uv run ruff check src/chute` and `uv run ty check` for static checks; behavior
-is exercised live on the disposable `RmStorm/merge-bot-experiments` repository.
+## Testing
+
+```bash
+uv sync --extra dev
+uv run pytest -q
+uv run pytest --cov --cov-report=term-missing
+uv run ruff check .
+uv run ty check
+```
+
+The scenario suite runs the real app and background worker. Signed webhooks enter
+through HTTP; assertions inspect the temporary SQLite journal, API responses,
+labels, and actual Git history. Only GitHub HTTP is simulated. Git fetches,
+rebases, conflicts, cherry-picks, and force-with-lease pushes use local repositories.
+No controller, store, CI-policy, or train-transition methods are mocked.
+
+Each scenario gets its own database, repositories, and generated App key. Tests
+ignore `.env`, clear inherited `CHUTE_*` variables, and block Python network
+connections. Git transport only accepts the fake remote and redirects it locally.
+The suite needs Git installed, but no running service or GitHub credentials.
+
+Coverage includes first-head admission, two-stage follower CI, SHA-preserving
+promotion, ejection/restacking, concurrent user pushes, policy/review gates,
+duplicate deliveries, mid-batch events, bounded-settlement retries, API failure
+retries, startup discovery, restart recovery after successful remote writes, and SSE.
+Coverage includes branches and has no percentage gate: add scenarios for concrete
+risks and regressions rather than tests for individual private methods.
+
+For a failure, use `uv run pytest -x -vv --log-cli-level=INFO`. Each pytest temporary
+directory retains `chute.sqlite3`, `requests.json`, `git-graph.txt`, and both Git
+repositories; timeout failures include journal state and recent API calls.
+
+The GitHub simulator is not a contract test. It approximates rebase-and-merge with
+real patch-equivalence and cherry-picks, but cannot prove GitHub's retargeting,
+permissions, ruleset enforcement, or eventual-consistency behavior. Keep a small
+live smoke test on `RmStorm/merge-bot-experiments` for those contracts. Browser
+rendering, process-kill durability, and every possible delivery ordering are not
+covered; simulated lost responses plus restart cover selected recovery boundaries.
 
 ## Notes
 

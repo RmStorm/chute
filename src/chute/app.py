@@ -69,8 +69,8 @@ def snapshot(controller):
     }
 
 
-def create_app(settings):
-    controller = Controller(settings)
+def create_app(settings, *, github_transport=None, git=None):
+    controller = Controller(settings, github_transport=github_transport, git=git)
 
     @asynccontextmanager
     async def lifespan(app):

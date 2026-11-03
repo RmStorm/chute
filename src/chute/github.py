@@ -10,13 +10,14 @@ class ConfigurationError(RuntimeError):
 
 
 class GitHub:
-    def __init__(self, settings):
+    def __init__(self, settings, *, transport=None):
         self.settings = settings
         self.repo = f"{settings.github_owner}/{settings.github_repo}"
         self.root = f"/repos/{self.repo}"
         self.http = httpx.AsyncClient(
             base_url=settings.github_api_url.rstrip("/"),
             timeout=30,
+            transport=transport,
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "chute",

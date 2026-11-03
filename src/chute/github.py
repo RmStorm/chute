@@ -1,28 +1,68 @@
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 import httpx
-
-from chute.github.client import GitHubClient
+import jwt
 
 
 class ConfigurationError(RuntimeError):
     pass
 
 
-class TrainGitHub:
-    def __init__(self, client: GitHubClient):
-        self.client = client
-        self.root = f"/repos/{client.repository.full_name}"
+class GitHub:
+    def __init__(self, settings):
+        self.settings = settings
+        self.repo = f"{settings.github_owner}/{settings.github_repo}"
+        self.root = f"/repos/{self.repo}"
+        self.http = httpx.AsyncClient(
+            base_url=settings.github_api_url.rstrip("/"),
+            timeout=30,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "chute",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        self._token = None
+        self._expires = datetime.min.replace(tzinfo=UTC)
+
+    async def close(self):
+        await self.http.aclose()
+
+    async def token(self):
+        now = datetime.now(UTC)
+        if self._token and now < self._expires:
+            return self._token
+        s = self.settings
+        if not all((s.github_app_id, s.github_installation_id, s.github_private_key_path)):
+            raise ConfigurationError("GitHub App credentials are not configured")
+        app_jwt = jwt.encode(
+            {
+                "iat": int((now - timedelta(seconds=30)).timestamp()),
+                "exp": int((now + timedelta(minutes=9)).timestamp()),
+                "iss": s.github_app_id,
+            },
+            s.github_private_key_path.read_text(),
+            algorithm="RS256",
+        )
+        response = await self.http.post(
+            f"/app/installations/{s.github_installation_id}/access_tokens",
+            headers={"Authorization": f"Bearer {app_jwt}"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        self._token = payload["token"]
+        self._expires = datetime.fromisoformat(payload["expires_at"]) - timedelta(minutes=1)
+        return self._token
 
     async def request(self, method: str, path: str, **kwargs):
-        token = await self.client._get_installation_token()
-        response = await self.client._http.request(
+        token = await self.token()
+        response = await self.http.request(
             method, path, headers={"Authorization": f"Bearer {token}"}, **kwargs
         )
         if response.status_code in {401, 403}:
             # Installation permissions may have changed since this token was minted.
-            self.client._installation_token = None
-            self.client._installation_token_expires_at = None
+            self._token = None
         response.raise_for_status()
         return response.json() if response.content else None
 
@@ -192,8 +232,8 @@ class TrainGitHub:
               } }
             }""",
                 "variables": {
-                    "owner": self.client.repository.owner,
-                    "name": self.client.repository.name,
+                    "owner": self.settings.github_owner,
+                    "name": self.settings.github_repo,
                     "number": number,
                 },
             },

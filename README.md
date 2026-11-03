@@ -46,8 +46,10 @@ from `mode=full` and include affected PR numbers and whether train repair ran.
 This is a prototype intended for live validation on a disposable repository.
 Targeted single-head landing has been exercised on `merge-bot-experiments`:
 PR #30 landed after required CI without another full sweep or a force-push.
-Concurrent multi-PR events and recovery paths still need live validation with
-the targeted dispatcher.
+The journal-only backend also landed PRs #31-#33 as a stack, including follower
+two-stage CI, SHA-preserving promotion, and a restart during an in-flight CI
+batch. Conflict/ejection paths and every remote-write crash window have not
+been re-exercised after this refactor.
 `GET /train` reports queue entries, first-stage watchers, required checks, and
 configuration errors. `GET /readyz` returns 503 while configuration is blocked.
 
@@ -247,13 +249,17 @@ The current HTTP surface is:
 
 SQLite is currently the only state store.
 
-Tables:
+Active tables:
 
-- `pull_requests`
-- `queue_entries`
-- `events`
-- `actions`
-- `notifications`
+- `train_journal`: the sole train/PR state, including display metadata and pending work.
+- `events`: the durable, deduplicated webhook inbox.
+- `actions`: controller action history.
+
+The first startup of the journal-only backend backfills titles/authors from the
+old PR table and normalizes action names/statuses in one transaction under the
+controller lock. Retired tables remain as history but are no longer written or
+used for live state. `/prs` and `/prs/{number}` now return journal entries, not
+the retired projection schema. There is no compatibility projection.
 
 GitHub is still intended to be the source of truth for live PR state. SQLite is there for:
 
@@ -262,23 +268,18 @@ GitHub is still intended to be the source of truth for live PR state. SQLite is 
 - action history
 - debugging
 
-## Testing
+## Backend Layout
 
-Run the current unit tests:
+- `controller.py`: event selection, shared PR refresh, train transitions and recovery.
+- `store.py`: journal, inbox, action history and one-time metadata migration.
+- `github.py`: App authentication and GitHub API/policy operations.
+- `git.py`: isolated rebases and lease-protected pushes.
+- `app.py`: HTTP endpoints and native FastAPI SSE.
+- `config.py`, `main.py`, `logging.py`: configuration and process startup.
 
-```bash
-uv run pytest
-```
-
-## Next Implementation Steps
-
-The next milestones in code are:
-
-1. Real GitHub App authentication and API client
-2. Startup scrape of open relevant PRs from GitHub
-3. Webhook-driven PR refresh against GitHub truth
-4. Richer planner outputs for desired base chaining
-5. GitHub writes for retargeting and merge execution
+The retired planner/client/projection tests were removed with their implementation.
+Use `uv run ruff check src/chute` and `uv run ty check` for static checks; behavior
+is exercised live on the disposable `RmStorm/merge-bot-experiments` repository.
 
 ## Notes
 

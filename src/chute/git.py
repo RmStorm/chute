@@ -55,7 +55,7 @@ class TrainGit:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
+            stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=180)
         except BaseException:
             if process.returncode is None:
                 process.kill()
@@ -76,7 +76,12 @@ class TrainGit:
         await self.run(
             # Deleted branches can conflict with new names under the same prefix.
             # Only remote-tracking refs are pruned; refs/chute preserves train history.
-            "fetch", "--prune", "--no-tags", url, "+refs/heads/*:refs/remotes/origin/*", token=token
+            "fetch",
+            "--prune",
+            "--no-tags",
+            url,
+            "+refs/heads/*:refs/remotes/origin/*",
+            token=token,
         )
 
     async def boundary(self, head: str, base: str) -> str:

@@ -1,2 +1,1 @@
 """Chute merge-train bot."""
-

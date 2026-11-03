@@ -4,7 +4,6 @@ from chute.app import create_app
 from chute.config import get_settings
 from chute.logging import configure_logging
 
-
 app = create_app(get_settings())
 
 

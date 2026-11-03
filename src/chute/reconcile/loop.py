@@ -257,15 +257,20 @@ class Reconciler:
                 self.eject(entry, entry["reason"], "chute-failed")
                 self.wake()
                 continue
-            if entry["ci"] != "passing":
+            first_head = not self.state["order"]
+            if not first_head and entry["ci"] != "passing":
                 continue
             entry["boundary"] = await self.git.boundary(entry["head_sha"], main_sha)
-            entry.update(phase="queued", queued_at=now(), initial_ci_sha=entry["head_sha"])
+            entry.update(phase="queued", queued_at=now())
+            if entry["ci"] == "passing":
+                entry["initial_ci_sha"] = entry["head_sha"]
             self.state["order"].append(entry["number"])
             self.save()
             self.log(
                 entry["number"],
-                "Initial CI passed; admitted to train",
+                "Took the empty train's head position; waiting for merge requirements"
+                if first_head
+                else "Initial CI passed; admitted to train",
                 action=ActionType.ENQUEUE_PR,
             )
             if not await self.prepare(entry, pr, target_ref, target_sha, policy):
@@ -295,13 +300,24 @@ class Reconciler:
             self.eject(entry, "User pushed while preparing stack", "chute-usererror")
             return False
         if entry["target_sha"] != target_sha:
+            # The first head already containing main needs no code rewrite or
+            # second CI run. Its existing checks still refer to the exact head SHA.
+            unchanged_head = (
+                entry["target_sha"] is None
+                and target_ref == self.settings.target_branch
+                and entry["boundary"] == target_sha
+            )
             # Preserve the tested commit when a landed predecessor has identical
             # content despite GitHub rewriting its commit metadata.
             preserve = entry["target_sha"] and await self.git.same_tree(
                 entry["boundary"], target_sha
             )
-            if preserve:
+            if unchanged_head or preserve:
                 entry["target_sha"] = target_sha
+                if unchanged_head:
+                    self.log(
+                        entry["number"], "Head already includes main; preserving commit and CI"
+                    )
             else:
                 try:
                     new_sha = await self.git.rebase(

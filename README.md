@@ -80,11 +80,13 @@ After fixing an ejected PR, add `automerge` again to start a new admission attem
 ## Current Queue Semantics
 
 1. PRs start against `main`. Adding `automerge` freezes their observed head SHA.
-2. Required CI must pass on that SHA before admission; pending checks wait.
-3. Eligible PRs append in admission order. Chute rebases each onto the train tail,
-   retargets it to its predecessor, and pushes with an explicit force-with-lease.
-4. The new SHA must pass required CI again. Only the head can land, after GitHub's
-   required reviews and merge conditions are satisfied.
+2. On an empty train, the first non-draft labeled PR takes the head position
+   immediately. If it already includes current `main`, its SHA and existing CI
+   are preserved; it lands once required CI and review/merge requirements pass.
+3. Followers wait for green initial CI before appending. Chute rebases each onto
+   the train tail, retargets it, and pushes with an explicit force-with-lease.
+4. Any rewritten SHA must pass required CI again. This also applies to a head
+   that needs rebasing because `main` advanced. Only the head can land.
 5. Landing uses GitHub's rebase-and-merge API with the expected head SHA.
 6. Promotion preserves the tested SHA when the old boundary and new base have
    identical trees. Other base changes require another rebase and fresh CI.

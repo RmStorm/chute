@@ -74,7 +74,9 @@ class TrainGit:
         if not (self.path / ".git").exists():
             await self.run("init", ".")
         await self.run(
-            "fetch", "--no-tags", url, "+refs/heads/*:refs/remotes/origin/*", token=token
+            # Deleted branches can conflict with new names under the same prefix.
+            # Only remote-tracking refs are pruned; refs/chute preserves train history.
+            "fetch", "--prune", "--no-tags", url, "+refs/heads/*:refs/remotes/origin/*", token=token
         )
 
     async def boundary(self, head: str, base: str) -> str:
